@@ -1,0 +1,6 @@
+/.idea/
+/yeelight-controller/Cargo.lock
+
+target/
+
+*.iml
