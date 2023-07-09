@@ -1,47 +1,59 @@
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpStream};
+use std::net::TcpStream;
 
-enum YeelightMethod {
-    GetProp(Vec<String>),
-    SetBright(u8),
-    SetPower(bool),
-    Toggle,
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct Command {
+    id: u8,
+    #[serde(flatten)]
+    method: Method,
 }
 
-impl YeelightMethod {
-    fn get_method_name(&self) -> String {
-        match self {
-            YeelightMethod::GetProp(_) => String::from("get_prop"),
-            YeelightMethod::SetBright(_) => String::from("set_bright"),
-            YeelightMethod::SetPower(_) => String::from("set_power"),
-            YeelightMethod::Toggle => String::from("toggle"),
-        }
-    }
-
-    fn get_params(&self) -> Vec<String> {
-        match self {
-            YeelightMethod::GetProp(params) => params.clone(),
-            YeelightMethod::SetBright(brightness) => vec![brightness.to_string()],
-            YeelightMethod::SetPower(power) => vec![if *power { "on" } else { "off" }.to_string()],
-            YeelightMethod::Toggle => vec![],
-        }
-    }
-
-    fn generate_json_packet(&self, id: u8) -> String {
-        serde_json::json!({
-            "id": id,
-            "method": self.get_method_name(),
-            "params": self.get_params(),
-        }).to_string() + "\r\n"
+impl Command {
+    pub const fn new(id: u8, method: Method) -> Self {
+        Self { id, method }
     }
 }
 
-struct YeelightDevice {
+#[derive(Serialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+enum Method {
+    GetProp { params: Vec<String> },
+    SetBright { params: [u8; 1] },
+    SetPower { params: [Power; 1] },
+    Toggle { params: [(); 0] },
+}
+
+impl Method {
+    pub const fn get_prop(params: Vec<String>) -> Method {
+        Method::GetProp { params }
+    }
+
+    pub const fn set_brightness(brightness: u8) -> Method {
+        Method::SetBright { params: [brightness] }
+    }
+
+    pub const fn set_power(power: Power) -> Method {
+        Method::SetPower { params: [power] }
+    }
+
+    pub const TOGGLE: Method = Method::Toggle { params: [] };
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Power {
+    On,
+    Off,
+}
+
+struct Device {
     socket: TcpStream,
     current_id: u8,
 }
 
-impl YeelightDevice {
+impl Device {
     const DEFAULT_PORT: u16 = 55443;
 
     fn new(hostname: String, port: u16) -> std::io::Result<Self> {
@@ -49,15 +61,13 @@ impl YeelightDevice {
         Ok(Self { socket, current_id: 1 })
     }
 
-    fn send_method(&mut self, method: YeelightMethod) -> std::io::Result<String> {
-        let packet = method.generate_json_packet(self.current_id);
+    fn send_command(&mut self, command: Command) -> std::io::Result<String> {
         self.current_id += 1;
-        self.send_packet(&packet)
-    }
 
-    fn send_packet(&mut self, packet: &str) -> std::io::Result<String> {
-        self.socket.write_all(packet.as_bytes())?;
+        serde_json::to_writer(&self.socket, &command)?;
+        self.socket.write_all(b"\r\n")?;
         self.socket.flush()?;
+
         self.read_response()
     }
 
@@ -69,28 +79,40 @@ impl YeelightDevice {
 }
 
 fn main() {
-    let ip = std::env::var("YEELIGHT_HOST").expect("No host address provided. Set env YEELIGHT_HOST to the ip of the yeelight device.");
+    let ip = std::env::var("YEELIGHT_HOST")
+        .expect("No host address provided. Set env YEELIGHT_HOST to the ip of the yeelight device.");
 
-    println!("{}", YeelightDevice::new(ip, YeelightDevice::DEFAULT_PORT)
+    println!("{}", Device::new(ip, Device::DEFAULT_PORT)
         .unwrap()
-        .send_method(YeelightMethod::Toggle)
+        .send_command(Command::new(1, Method::TOGGLE))
         .unwrap());
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::{Command, Method};
+
+    impl ToString for Command {
+        fn to_string(&self) -> String {
+            serde_json::to_string(self).unwrap()
+        }
+    }
 
     #[test]
     fn test_generate_json_packet() {
-        let method = YeelightMethod::GetProp(vec![String::from("power")]);
-        let packet = method.generate_json_packet(1);
-        assert_eq!(packet, "{\"id\":1,\"method\":\"get_prop\",\"params\":[\"power\"]}\r\n");
+        assert_eq!(Command::new(1, Method::get_prop(vec!("power".to_string()))).to_string(),
+                   "{\"id\":1,\"method\":\"get_prop\",\"params\":[\"power\"]}");
     }
 
     #[test]
     fn test_generate_json_packet_set_power() {
-        assert_eq!(YeelightMethod::SetPower(true).generate_json_packet(1),
-                   "{\"id\":1,\"method\":\"set_power\",\"params\":[\"on\"]}\r\n");
+        assert_eq!(Command::new(1, Method::set_power(crate::Power::On)).to_string(),
+                   "{\"id\":1,\"method\":\"set_power\",\"params\":[\"on\"]}");
+    }
+
+    #[test]
+    fn test_generate_json_packet_set_bright() {
+        assert_eq!(Command::new(1, Method::set_brightness(50)).to_string(),
+                   "{\"id\":1,\"method\":\"set_bright\",\"params\":[50]}");
     }
 }
