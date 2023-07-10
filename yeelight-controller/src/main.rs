@@ -20,8 +20,8 @@ impl Command {
 #[serde(tag = "method", rename_all = "snake_case")]
 enum Method {
     GetProp { params: Vec<String> },
-    SetBright { params: [u8; 1] },
-    SetPower { params: [Power; 1] },
+    SetBright { params: (u8, ) },
+    SetPower { params: (Power, ) },
     Toggle { params: [(); 0] },
 }
 
@@ -31,11 +31,11 @@ impl Method {
     }
 
     pub const fn set_brightness(brightness: u8) -> Method {
-        Method::SetBright { params: [brightness] }
+        Method::SetBright { params: (brightness, ) }
     }
 
     pub const fn set_power(power: Power) -> Method {
-        Method::SetPower { params: [power] }
+        Method::SetPower { params: (power, ) }
     }
 
     pub const TOGGLE: Method = Method::Toggle { params: [] };
@@ -61,7 +61,9 @@ impl Device {
         Ok(Self { socket, current_id: 1 })
     }
 
-    fn send_command(&mut self, command: Command) -> std::io::Result<String> {
+    fn send_method(&mut self, method: Method) -> std::io::Result<String> {
+        let command = Command::new(self.current_id, method);
+
         self.current_id += 1;
 
         serde_json::to_writer(&self.socket, &command)?;
@@ -84,13 +86,13 @@ fn main() {
 
     println!("{}", Device::new(ip, Device::DEFAULT_PORT)
         .unwrap()
-        .send_command(Command::new(1, Method::TOGGLE))
+        .send_method(Method::TOGGLE)
         .unwrap());
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{Command, Method};
+    use crate::{Command, Method, Power};
 
     impl ToString for Command {
         fn to_string(&self) -> String {
@@ -100,19 +102,29 @@ mod tests {
 
     #[test]
     fn test_generate_json_packet() {
-        assert_eq!(Command::new(1, Method::get_prop(vec!("power".to_string()))).to_string(),
-                   "{\"id\":1,\"method\":\"get_prop\",\"params\":[\"power\"]}");
-    }
+        let mut list = Vec::new();
 
-    #[test]
-    fn test_generate_json_packet_set_power() {
-        assert_eq!(Command::new(1, Method::set_power(crate::Power::On)).to_string(),
-                   "{\"id\":1,\"method\":\"set_power\",\"params\":[\"on\"]}");
-    }
+        list.push((Command::new(1, Method::set_power(Power::On)),
+                   "{\"id\":1,\"method\":\"set_power\",\"params\":[\"on\"]}"));
 
-    #[test]
-    fn test_generate_json_packet_set_bright() {
-        assert_eq!(Command::new(1, Method::set_brightness(50)).to_string(),
-                   "{\"id\":1,\"method\":\"set_bright\",\"params\":[50]}");
+        list.push((Command::new(1, Method::set_brightness(50)),
+                   "{\"id\":1,\"method\":\"set_bright\",\"params\":[50]}"));
+
+        list.push((Command::new(1, Method::get_prop(vec!("power".to_string()))),
+                   "{\"id\":1,\"method\":\"get_prop\",\"params\":[\"power\"]}"));
+
+        list.push((Command::new(1, Method::TOGGLE),
+                   "{\"id\":1,\"method\":\"toggle\",\"params\":[]}"));
+
+        // Need a better way to do this
+
+        for (command, expected) in list {
+            match command.method {
+                Method::GetProp { .. } => assert_eq!(command.to_string(), expected),
+                Method::SetBright { .. } => assert_eq!(command.to_string(), expected),
+                Method::SetPower { .. } => assert_eq!(command.to_string(), expected),
+                Method::Toggle { .. } => assert_eq!(command.to_string(), expected),
+            };
+        }
     }
 }
