@@ -3,6 +3,7 @@ use std::net::TcpStream;
 use std::str::FromStr;
 
 use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 pub struct Command {
@@ -61,6 +62,28 @@ impl FromStr for Power {
     }
 }
 
+#[derive(Deserialize)]
+pub struct Response {
+    id: u8,
+    #[serde(flatten)]
+    result: ResponseResult,
+}
+
+#[derive(Deserialize, PartialEq, Debug)]
+pub enum ResponseResult {
+    #[serde(rename = "result")]
+    Success(Vec<String>),
+
+    #[serde(rename = "error")]
+    Error { code: i8, message: String },
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Notification {
+    method: String,
+    params: HashMap<String, String>,
+}
+
 pub struct Device {
     socket: TcpStream,
     current_id: u8,
@@ -96,7 +119,7 @@ impl Device {
 
 #[cfg(test)]
 mod tests {
-    use crate::yeelight::{Command, Method, Power};
+    use crate::yeelight::{Command, Method, Notification, Power, Response, ResponseResult};
 
     impl ToString for Command {
         fn to_string(&self) -> String {
@@ -105,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_json_packet() {
+    fn test_command_generate_json_packet() {
         let mut list = Vec::new();
 
         list.push((Command::new(1, Method::set_power(Power::On)),
@@ -130,5 +153,29 @@ mod tests {
                 Method::Toggle { .. } => assert_eq!(command.to_string(), expected),
             };
         }
+    }
+
+    #[test]
+    fn test_response_from_json() {
+        let ok_response: Response = serde_json::from_str("{\"id\":1,\"result\":[\"on\"]}").unwrap();
+        assert_eq!(ok_response.id, 1);
+        assert_eq!(ok_response.result, ResponseResult::Success(vec!("on".to_string())));
+
+
+        let error_response = "{\"id\":2, \"error\":{\"code\":-1, \"message\":\"unsupported method\"}}";
+        let error_response: Response = serde_json::from_str(error_response).unwrap();
+
+        assert_eq!(error_response.id, 2);
+        dbg!(error_response.result);
+    }
+
+    #[test]
+    fn test_notification_from_json() {
+        let notification = "{\"method\":\"props\",\"params\":{\"power\":\"on\", \"bright\": \"10\"}}";
+        let notification: Notification = serde_json::from_str(notification).unwrap();
+
+        assert_eq!(notification.method, "props");
+        assert_eq!(notification.params.get("power").unwrap(), "on");
+        assert_eq!(notification.params.get("bright").unwrap(), "10");
     }
 }
