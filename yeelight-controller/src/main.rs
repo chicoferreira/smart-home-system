@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -8,6 +7,10 @@ use paho_mqtt::Message;
 use yeelight::{Device, Method, Power};
 
 mod yeelight;
+
+const MQTT_SET_POWER_TOPIC: &str = "smart-home-system/yeelight/set_power";
+const MQTT_SET_BRIGHTNESS_TOPIC: &str = "smart-home-system/yeelight/set_brightness";
+const MQTT_TOGGLE_TOPIC: &str = "smart-home-system/yeelight/toggle";
 
 #[tokio::main]
 async fn main() {
@@ -20,7 +23,7 @@ async fn main() {
 
     info!("Connecting to yeelight device at {}...", device_ip);
 
-    let mut device = Device::new(device_ip, Device::DEFAULT_PORT)
+    let mut device = Device::new(device_ip, Device::DEFAULT_PORT).await
         .expect("Failed to connect to yeelight device.");
 
     info!("Connected to yeelight device.");
@@ -59,15 +62,9 @@ async fn main() {
         client.connect(connection_options).await
             .expect("Failed to connect to mqtt server");
 
-        let topics = {
-            let mut topics: HashMap<&str, fn(&mut Device, Message)> = HashMap::new();
-            topics.insert("smart-home-system/yeelight/set_power", handle_mqtt_set_power);
-            topics.insert("smart-home-system/yeelight/set_brightness", handle_mqtt_set_brightness);
-            topics.insert("smart-home-system/yeelight/toggle", handle_mqtt_toggle);
-            topics
-        };
+        let subscribe_topics = [MQTT_SET_POWER_TOPIC, MQTT_SET_BRIGHTNESS_TOPIC, MQTT_TOGGLE_TOPIC];
 
-        for &topic in topics.keys() {
+        for &topic in subscribe_topics.iter() {
             info!("Subscribing to mqtt topic: {}", topic);
             client.subscribe(topic, 1).await
                 .unwrap_or_else(|_| panic!("Failed to subscribe to topic: {}", topic));
@@ -77,39 +74,40 @@ async fn main() {
 
         while let Ok(message) = stream.recv().await {
             if let Some(message) = message {
-                if let Some(handler) = topics.get(message.topic()) {
-                    handler(&mut device, message);
-                } else {
-                    error!("Received message for unknown topic: {}", message.topic());
+                match message.topic() {
+                    MQTT_SET_POWER_TOPIC => handle_mqtt_set_power(&mut device, &message).await,
+                    MQTT_SET_BRIGHTNESS_TOPIC => handle_mqtt_set_brightness(&mut device, &message).await,
+                    MQTT_TOGGLE_TOPIC => handle_mqtt_toggle(&mut device, &message).await,
+                    _ => error!("Received message for unknown topic: {}", message.topic()),
                 }
             }
         };
     }).await.expect("Error creating tokio task");
 }
 
-fn handle_mqtt_toggle(device: &mut Device, message: Message) {
+async fn handle_mqtt_toggle(device: &mut Device, message: &Message) {
     info!("[{}] Toggling yeelight device",  message.topic());
-    device.send_method(Method::TOGGLE).expect("Could not send toggle method");
+    device.send_method(Method::TOGGLE).await.expect("Could not send toggle method");
 }
 
-fn handle_mqtt_set_brightness(device: &mut Device, message: Message) {
+async fn handle_mqtt_set_brightness(device: &mut Device, message: &Message) {
     let payload = message.payload_str();
 
     if let Ok(brightness) = message.payload_str().parse() {
         info!("[{}] Setting yeelight device brightness to: {:?}",  message.topic(), brightness);
-        device.send_method(Method::set_brightness(brightness)).expect("Could not send set_brightness method");
+        device.send_method(Method::set_brightness(brightness)).await.expect("Could not send set_brightness method");
         return;
     }
 
     error!("[{}] Received invalid payload: '{}'", message.topic(), payload);
 }
 
-fn handle_mqtt_set_power(device: &mut Device, message: Message) {
+async fn handle_mqtt_set_power(device: &mut Device, message: &Message) {
     let payload = message.payload_str();
 
     if let Ok(power) = Power::from_str(&payload) {
         info!("[{}] Setting yeelight device power to: {:?}", message.topic(), power);
-        device.send_method(Method::set_power(power)).expect("Could not send set_power method");
+        device.send_method(Method::set_power(power)).await.expect("Could not send set_power method");
         return;
     }
 

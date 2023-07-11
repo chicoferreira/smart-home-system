@@ -1,9 +1,10 @@
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::collections::HashMap;
 use std::str::FromStr;
 
-use serde::Serialize;
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 
 #[derive(Serialize)]
 pub struct Command {
@@ -85,33 +86,38 @@ pub struct Notification {
 }
 
 pub struct Device {
-    socket: TcpStream,
-    current_id: u8,
+    current_id: Mutex<u8>,
+    socket: BufReader<TcpStream>,
 }
 
 impl Device {
     pub const DEFAULT_PORT: u16 = 55443;
 
-    pub fn new(hostname: String, port: u16) -> std::io::Result<Self> {
-        let socket = TcpStream::connect((hostname, port))?;
-        Ok(Self { socket, current_id: 1 })
+    pub async fn new(hostname: String, port: u16) -> std::io::Result<Self> {
+        let socket = TcpStream::connect((hostname, port)).await?;
+        let socket = BufReader::new(socket);
+
+        Ok(Self { socket, current_id: Mutex::new(0) })
     }
 
-    pub fn send_method(&mut self, method: Method) -> std::io::Result<String> {
-        let command = Command::new(self.current_id, method);
+    pub async fn send_method(&mut self, method: Method) -> std::io::Result<String> {
+        let command = {
+            let mut current_id = self.current_id.lock().await;
+            *current_id += 1;
 
-        self.current_id += 1;
+            Command::new(*current_id, method)
+        };
 
-        serde_json::to_writer(&self.socket, &command)?;
-        self.socket.write_all(b"\r\n")?;
-        self.socket.flush()?;
+        self.socket.write_all(&serde_json::to_vec(&command)?).await?;
+        self.socket.write_all(b"\r\n").await?;
+        self.socket.flush().await?;
 
-        self.read_response()
+        self.read_response().await
     }
 
-    fn read_response(&mut self) -> std::io::Result<String> {
-        let mut lines = BufReader::new(&self.socket).lines();
-        let response = lines.next().unwrap()?;
+    async fn read_response(&mut self) -> std::io::Result<String> {
+        let mut response = String::new();
+        self.socket.read_line(&mut response).await?;
         Ok(response)
     }
 }
@@ -160,7 +166,6 @@ mod tests {
         let ok_response: Response = serde_json::from_str("{\"id\":1,\"result\":[\"on\"]}").unwrap();
         assert_eq!(ok_response.id, 1);
         assert_eq!(ok_response.result, ResponseResult::Success(vec!("on".to_string())));
-
 
         let error_response = "{\"id\":2, \"error\":{\"code\":-1, \"message\":\"unsupported method\"}}";
         let error_response: Response = serde_json::from_str(error_response).unwrap();
