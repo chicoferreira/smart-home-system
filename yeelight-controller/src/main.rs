@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::str::FromStr;
 use std::time::Duration;
 
-use log::{debug, error, info};
+use log::{error, info};
 use paho_mqtt::Message;
-use serde::{Serialize};
+use serde::Serialize;
 
 #[derive(Serialize)]
 struct Command {
@@ -73,7 +74,7 @@ impl Device {
     const DEFAULT_PORT: u16 = 55443;
 
     fn new(hostname: String, port: u16) -> std::io::Result<Self> {
-        let socket = TcpStream::connect((hostname, port)).expect("Failed to connect to device");
+        let socket = TcpStream::connect((hostname, port))?;
         Ok(Self { socket, current_id: 1 })
     }
 
@@ -100,13 +101,17 @@ impl Device {
 async fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    debug!("Starting yeelight controller");
+    info!("Starting yeelight controller");
 
     let device_ip = std::env::var("YEELIGHT_HOST")
         .expect("No host address provided. Set env YEELIGHT_HOST to the ip of the yeelight device.");
 
+    info!("Connecting to yeelight device at {}...", device_ip);
+
     let mut device = Device::new(device_ip, Device::DEFAULT_PORT)
         .expect("Failed to connect to yeelight device.");
+
+    info!("Connected to yeelight device.");
 
     let mqtt_server_uri = std::env::var("MQTT_SERVER_URI")
         .expect("No mqtt server uri provided. Set env MQTT_SERVER_URI to the uri of the mqtt server.");
@@ -138,25 +143,32 @@ async fn main() {
     tokio::spawn(async move {
         let stream = client.get_stream(10);
 
+        info!("Connecting to mqtt server...");
         client.connect(connection_options).await
             .expect("Failed to connect to mqtt server");
 
-        async fn subscribe_yeelight(client: &mut paho_mqtt::AsyncClient, topic: &str) {
-            client.subscribe(format!("smart-home-system/yeelight/{}", topic), 1).await
-                .expect(&format!("Failed to subscribe to topic: {}", topic));
+        let topics = {
+            let mut topics: HashMap<&str, fn(&mut Device, Message)> = HashMap::new();
+            topics.insert("smart-home-system/yeelight/set_power", handle_mqtt_set_power);
+            topics.insert("smart-home-system/yeelight/set_brightness", handle_mqtt_set_brightness);
+            topics.insert("smart-home-system/yeelight/toggle", handle_mqtt_toggle);
+            topics
+        };
+
+        for &topic in topics.keys() {
+            info!("Subscribing to mqtt topic: {}", topic);
+            client.subscribe(topic, 1).await
+                .unwrap_or_else(|_| panic!("Failed to subscribe to topic: {}", topic));
         }
 
-        subscribe_yeelight(&mut client, "set_power").await;
-        subscribe_yeelight(&mut client, "set_brightness").await;
-        subscribe_yeelight(&mut client, "toggle").await;
+        info!("Waiting for mqtt messages...");
 
         while let Ok(message) = stream.recv().await {
             if let Some(message) = message {
-                match message.topic() {
-                    "smart-home-system/yeelight/set_power" => handle_mqtt_set_power(&mut device, message),
-                    "smart-home-system/yeelight/set_brightness" => handle_mqtt_set_brightness(&mut device, message),
-                    "smart-home-system/yeelight/toggle" => handle_mqtt_toggle(&mut device, message),
-                    _ => error!("Received message on unknown topic: {}", message.topic()),
+                if let Some(handler) = topics.get(message.topic()) {
+                    handler(&mut device, message);
+                } else {
+                    error!("Received message for unknown topic: {}", message.topic());
                 }
             }
         };
@@ -164,7 +176,7 @@ async fn main() {
 }
 
 fn handle_mqtt_toggle(device: &mut Device, message: Message) {
-    info!(target: message.topic(), "Toggling yeelight device");
+    info!("[{}] Toggling yeelight device",  message.topic());
     device.send_method(Method::TOGGLE).expect("Could not send toggle method");
 }
 
@@ -172,24 +184,24 @@ fn handle_mqtt_set_brightness(device: &mut Device, message: Message) {
     let payload = message.payload_str();
 
     if let Ok(brightness) = message.payload_str().parse() {
-        info!(target: message.topic(), "Setting yeelight device brightness to: {:?}", brightness);
+        info!("[{}] Setting yeelight device brightness to: {:?}",  message.topic(), brightness);
         device.send_method(Method::set_brightness(brightness)).expect("Could not send set_brightness method");
         return;
     }
 
-    error!(target: message.topic(), "Received invalid payload: '{}'", payload);
+    error!("[{}] Received invalid payload: '{}'", message.topic(), payload);
 }
 
 fn handle_mqtt_set_power(device: &mut Device, message: Message) {
     let payload = message.payload_str();
 
     if let Ok(power) = Power::from_str(&payload) {
-        info!(target: message.topic(), "Setting yeelight device power to: {:?}", power);
+        info!("[{}] Setting yeelight device power to: {:?}", message.topic(), power);
         device.send_method(Method::set_power(power)).expect("Could not send set_power method");
         return;
     }
 
-    error!(target: message.topic(), "Received invalid payload: '{}'", payload);
+    error!("[{}] Received invalid payload: '{}'", message.topic(), payload);
 }
 
 
