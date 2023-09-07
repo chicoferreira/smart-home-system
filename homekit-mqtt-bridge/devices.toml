@@ -1,0 +1,21 @@
+[yeelight-ceiling-light]
+name = "Yeelight Ceiling Light"
+
+[yeelight-ceiling-light.Lightbulb]
+set_power = "smart-home-system/yeelight/power/set"
+get_power = "smart-home-system/yeelight/power/get"
+power = "smart-home-system/yeelight/power"
+set_brightness = "smart-home-system/yeelight/brightness/set"
+get_brightness = "smart-home-system/yeelight/brightness/get"
+brightness = "smart-home-system/yeelight/brightness"
+
+[samsung-ac]
+name = "Samsung AC"
+
+[samsung-ac.Thermostat]
+set_power = "smart-home-system/samsung/power/set"
+get_power = "smart-home-system/samsung/power/get"
+power = "smart-home-system/samsung/power"
+set_temperature = "smart-home-system/samsung/temperature/set"
+get_temperature = "smart-home-system/samsung/temperature/get"
+temperature = "smart-home-system/samsung/temperature"
