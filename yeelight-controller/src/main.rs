@@ -31,7 +31,7 @@ async fn main() {
         .finalize();
 
 
-    let mut client = paho_mqtt::AsyncClient::new(create_options)
+    let mut client = AsyncClient::new(create_options)
         .expect("Failed to create mqtt client");
 
     let mut connection_options = paho_mqtt::ConnectOptionsBuilder::new();
@@ -124,7 +124,9 @@ async fn handle_mqtt_toggle(device: &mut Device, message: &Message) {
 async fn handle_mqtt_brightness_set(device: &mut Device, message: &Message) {
     let payload = message.payload_str();
 
-    if let Ok(brightness) = message.payload_str().parse() {
+    if let Ok(brightness) = message.payload_str().parse::<u8>() {
+        let brightness = brightness.max(1).min(100);
+
         info!("[{}] Setting yeelight device brightness to: {:?}",  message.topic(), brightness);
         device.send_method(Method::set_brightness(brightness)).await.expect("Could not send set_brightness method");
         return;

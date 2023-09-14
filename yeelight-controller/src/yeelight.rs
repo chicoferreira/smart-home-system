@@ -126,7 +126,7 @@ impl FromStr for Notification {
     }
 }
 
-type Id = u8;
+type Id = u64;
 
 pub struct Device {
     current_id: Mutex<Id>,
