@@ -4,7 +4,10 @@ use hap::{accessory::{AccessoryCategory, AccessoryInformation}, Config, MacAddre
 use hap::accessory::bridge::BridgeAccessory;
 use hap::futures::future::join_all;
 
+use crate::mqtt::MqttWrapper;
+
 mod device;
+mod mqtt;
 
 async fn load_hap_rs_config(storage: &mut FileStorage) -> Result<Config> {
     let config = match storage.load_config().await {
@@ -56,8 +59,6 @@ async fn main() -> Result<()> {
         .clean_session(true)
         .finalize();
 
-    // let stream = client.get_stream(10);
-
     client.connect(connection_options).await
         .expect("Failed to connect to mqtt server");
 
@@ -80,8 +81,10 @@ async fn main() -> Result<()> {
     let server = IpServer::new(config, storage).await?;
     server.add_accessory(bridge).await?;
 
+    let mqtt_wrapper = MqttWrapper::new(client);
+
     let mut device = device::yeelight_device::YeelightDevice::new("yeelight".into());
-    server.add_accessory(device.setup(2, &client)).await?;
+    server.add_accessory(device.setup(2, &mqtt_wrapper)).await?;
 
     std::env::set_var("RUST_LOG", "hap=debug");
     env_logger::init();

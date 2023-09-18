@@ -10,3 +10,7 @@ env_logger = "0.10.0"
 hap = "0.1.0-pre.15"
 paho-mqtt = "0.12.1"
 tokio = { version = "1.32.0", features = ["full"] }
+log = "0.4.20"
+dashmap = "5.5.3"
+async-trait = "0.1.73"
+anyhow = "1.0.75"

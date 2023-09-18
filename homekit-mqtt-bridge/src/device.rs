@@ -1,13 +1,15 @@
-pub mod yeelight_device;
-
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use hap::characteristic::AsyncCharacteristicCallbacks;
 use hap::characteristic::brightness::BrightnessCharacteristic;
 use hap::characteristic::power_state::PowerStateCharacteristic;
 use hap::futures::FutureExt;
-use paho_mqtt::AsyncClient;
+
+use crate::mqtt::MqttWrapper;
+
+pub mod yeelight_device;
 
 pub struct InnerDevice<T, H> {
     pub name: String,
@@ -42,14 +44,14 @@ impl<T, H> Device<T, H> {
         &self.inner.name
     }
 
-    pub fn characteristic<A>(&self, mqtt_client: AsyncClient) -> A
+    pub async fn characteristic<A>(&self, mqtt_client: MqttWrapper) -> anyhow::Result<A>
         where
             Self: Characteristic<A>,
     {
-        self.get_value(mqtt_client)
+        self.get_value(mqtt_client).await
     }
 
-    pub fn set_characteristic<A>(&mut self, value: A, mqtt_client: AsyncClient)
+    pub fn set_characteristic<A>(&mut self, value: A, mqtt_client: MqttWrapper)
         where
             Self: Characteristic<A>,
     {
@@ -59,25 +61,29 @@ impl<T, H> Device<T, H> {
 
 impl<T, H> Device<T, H>
     where Self: Characteristic<Power>, H: Send + Sync + 'static, T: Send + Sync + 'static {
-    pub fn setup_power(&self, mqtt_client: &AsyncClient, power_state_characteristic: &mut PowerStateCharacteristic) {
+    pub fn setup_power(&self, mqtt_client: &MqttWrapper, power_state_characteristic: &mut PowerStateCharacteristic) {
         Self::setup_power_update(self.clone(), mqtt_client.clone(), power_state_characteristic);
         Self::setup_power_read(self.clone(), mqtt_client.clone(), power_state_characteristic);
     }
 
-    fn setup_power_read(device: Device<T, H>, mqtt_client: AsyncClient, power_state_characteristic: &mut PowerStateCharacteristic) {
+    fn setup_power_read(device: Device<T, H>, mqtt_client: MqttWrapper, power_state_characteristic: &mut PowerStateCharacteristic) {
         power_state_characteristic.on_read_async(Some(move || {
             let device = device.clone();
             let mqtt_client = mqtt_client.clone();
             async move {
                 println!("Read of the power state characteristic was triggered.");
-                let power = device.characteristic::<Power>(mqtt_client.clone());
+                let power = device.characteristic::<Power>(mqtt_client.clone()).await;
 
-                Ok(Some(power.0))
+                // TODO: announce error
+                match power {
+                    Ok(power) => Ok(Some(power.0)),
+                    Err(_) => Ok(Some(false))
+                }
             }.boxed()
         }));
     }
 
-    fn setup_power_update(device: Device<T, H>, mqtt_client: AsyncClient, power_state_characteristic: &mut PowerStateCharacteristic) {
+    fn setup_power_update(device: Device<T, H>, mqtt_client: MqttWrapper, power_state_characteristic: &mut PowerStateCharacteristic) {
         power_state_characteristic.on_update_async(Some(move |current_val: bool, new_val: bool| {
             let mqtt_client = mqtt_client.clone();
             let mut device = device.clone();
@@ -95,25 +101,25 @@ impl<T, H> Device<T, H>
 
 impl<T, H> Device<T, H>
     where Self: Characteristic<Brightness>, H: Send + Sync + 'static, T: Send + Sync + 'static {
-    pub fn setup_brightness(&self, mqtt_client: &AsyncClient, brightness_characteristic: &mut BrightnessCharacteristic) {
+    pub fn setup_brightness(&self, mqtt_client: &MqttWrapper, brightness_characteristic: &mut BrightnessCharacteristic) {
         Self::setup_brightness_update(self.clone(), mqtt_client.clone(), brightness_characteristic);
         Self::setup_brightness_read(self.clone(), mqtt_client.clone(), brightness_characteristic);
     }
 
-    fn setup_brightness_read(device: Device<T, H>, mqtt_client: AsyncClient, brightness_characteristic: &mut BrightnessCharacteristic) {
+    fn setup_brightness_read(device: Device<T, H>, mqtt_client: MqttWrapper, brightness_characteristic: &mut BrightnessCharacteristic) {
         brightness_characteristic.on_read_async(Some(move || {
             let device = device.clone();
             let mqtt_client = mqtt_client.clone();
             async move {
                 println!("Read of the brightness characteristic was triggered.");
 
-                let brightness = device.characteristic::<Brightness>(mqtt_client.clone());
+                let brightness = device.characteristic::<Brightness>(mqtt_client.clone()).await;
                 Ok(Some(brightness.0 as i32))
             }.boxed()
         }));
     }
 
-    fn setup_brightness_update(device: Device<T, H>, mqtt_client: AsyncClient, brightness_characteristic: &mut BrightnessCharacteristic) {
+    fn setup_brightness_update(device: Device<T, H>, mqtt_client: MqttWrapper, brightness_characteristic: &mut BrightnessCharacteristic) {
         brightness_characteristic.on_update_async(Some(move |current_val: i32, new_val: i32| {
             let mqtt_client = mqtt_client.clone();
             let mut device = device.clone();
@@ -129,9 +135,10 @@ impl<T, H> Device<T, H>
     }
 }
 
+#[async_trait]
 pub trait Characteristic<T> {
-    fn get_value(&self, mqtt_client: AsyncClient) -> T;
-    fn set_value(&mut self, value: T, mqtt_client: AsyncClient);
+    async fn get_value(&self, mqtt_client: MqttWrapper) -> anyhow::Result<T>;
+    fn set_value(&mut self, value: T, mqtt_client: MqttWrapper);
 }
 
 pub struct Brightness(pub u8);
