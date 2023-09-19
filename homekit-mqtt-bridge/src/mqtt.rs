@@ -1,11 +1,12 @@
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use paho_mqtt::{AsyncClient, Message};
 use tokio::task::JoinHandle;
 
-type Callback = Box<dyn Fn(&Message) -> Box<dyn Future<Output = ()> + Send + Sync> + Send + Sync>;
+type Callback = Box<dyn Fn(&Message) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct MqttWrapper {

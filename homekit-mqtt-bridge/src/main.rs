@@ -84,7 +84,9 @@ async fn main() -> Result<()> {
     let mut mqtt_wrapper = MqttWrapper::new(client);
 
     let mut device = device::yeelight_device::YeelightDevice::new("yeelight".into());
-    server.add_accessory(device.setup(2, &mut mqtt_wrapper)).await?;
+    let arc = server.add_accessory(device.setup(2, &mut mqtt_wrapper)).await?;
+
+    device.setup_pointer(&mut mqtt_wrapper, arc.clone());
 
     std::env::set_var("RUST_LOG", "hap=debug");
     env_logger::init();

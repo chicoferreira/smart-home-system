@@ -1,6 +1,7 @@
-use hap::accessory::AccessoryInformation;
+use hap::accessory::{AccessoryInformation, HapAccessory};
 use hap::accessory::lightbulb::LightbulbAccessory;
-use hap::characteristic::HapCharacteristic;
+use hap::futures::lock::Mutex;
+use hap::HapType;
 use paho_mqtt::Message;
 
 use crate::device::{Brightness, Characteristic, Device, Power};
@@ -30,14 +31,24 @@ impl YeelightDevice {
         self.setup_power(mqtt_client, &mut lightbulb.lightbulb.power_state);
         self.setup_brightness(mqtt_client, lightbulb.lightbulb.brightness.as_mut().expect("The brightness characteristic should be created successfully."));
 
-        mqtt_client.subscribe("smart-home-system/yeelight/brightness", Box::new(|message: &Message| Box::new(async {
-            let payload = message.payload_str();
-            let brightness = Brightness(payload.parse::<u8>().expect("The payload should be a u8."));
-            lightbulb.lightbulb.brightness.unwrap().set_value(brightness.0.into()).await;
-        })));
-
         lightbulb
     }
+
+    pub fn setup_pointer(&self, mqtt_client: &mut MqttWrapper, lightbulb: std::sync::Arc<Mutex<Box<dyn HapAccessory>>>) {
+        mqtt_client.subscribe("smart-home-system/yeelight/brightness", Box::new(|message: &Message| Box::pin(async move {
+            let payload = message.payload_str();
+            let brightness = Brightness(payload.parse::<u8>().expect("The payload should be a u8."));
+
+            let mut motion_sensor_accessory = lightbulb.lock().await;
+            let motion_sensor_service = motion_sensor_accessory.get_mut_service(HapType::MotionSensor).unwrap();
+            let motion_detected_characteristic = motion_sensor_service
+                .get_mut_characteristic(HapType::MotionDetected)
+                .unwrap();
+
+            motion_detected_characteristic.set_value(brightness.0.into()).await;
+        })));
+    }
+
 }
 
 impl Characteristic<Brightness> for YeelightDevice {
