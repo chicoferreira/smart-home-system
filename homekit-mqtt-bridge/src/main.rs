@@ -81,10 +81,10 @@ async fn main() -> Result<()> {
     let server = IpServer::new(config, storage).await?;
     server.add_accessory(bridge).await?;
 
-    let mqtt_wrapper = MqttWrapper::new(client);
+    let mut mqtt_wrapper = MqttWrapper::new(client);
 
     let mut device = device::yeelight_device::YeelightDevice::new("yeelight".into());
-    server.add_accessory(device.setup(2, &mqtt_wrapper)).await?;
+    server.add_accessory(device.setup(2, &mut mqtt_wrapper)).await?;
 
     std::env::set_var("RUST_LOG", "hap=debug");
     env_logger::init();

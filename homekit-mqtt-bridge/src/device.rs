@@ -1,20 +1,20 @@
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use async_trait::async_trait;
 use hap::characteristic::AsyncCharacteristicCallbacks;
 use hap::characteristic::brightness::BrightnessCharacteristic;
 use hap::characteristic::power_state::PowerStateCharacteristic;
 use hap::futures::FutureExt;
+use log::warn;
 
 use crate::mqtt::MqttWrapper;
 
 pub mod yeelight_device;
 
-pub struct InnerDevice<T, H> {
-    pub name: String,
-    pub t: PhantomData<T>,
-    pub h: PhantomData<H>,
+struct InnerDevice<T, H> {
+    name: String,
+    device: T,
+    h: PhantomData<H>,
 }
 
 impl<T, H> Clone for Device<T, H> {
@@ -26,29 +26,37 @@ impl<T, H> Clone for Device<T, H> {
 }
 
 pub struct Device<T, H> {
-    pub inner: Arc<InnerDevice<T, H>>,
+    inner: Arc<RwLock<InnerDevice<T, H>>>,
 }
 
-impl<T, H> Device<T, H> {
-    pub(crate) fn new_device(name: String) -> Self {
+impl<D, H> Device<D, H> {
+    pub(crate) fn new_device(name: String, device: D) -> Self {
         Device {
-            inner: Arc::new(InnerDevice {
+            inner: Arc::new(RwLock::new(InnerDevice {
                 name,
-                t: PhantomData,
+                device,
                 h: PhantomData,
-            }),
+            })),
         }
     }
 
     pub fn name(&self) -> &str {
-        &self.inner.name
+        &self.inner.read().unwrap().name
+    }
+
+    pub fn get_device(&self) -> &D {
+        &self.inner.read().unwrap().device
+    }
+
+    pub fn get_mut_device(&mut self) -> &mut D {
+        &mut self.inner.write().unwrap().device
     }
 
     pub async fn characteristic<A>(&self, mqtt_client: MqttWrapper) -> anyhow::Result<A>
         where
             Self: Characteristic<A>,
     {
-        self.get_value(mqtt_client).await
+        self.get_value(mqtt_client)
     }
 
     pub fn set_characteristic<A>(&mut self, value: A, mqtt_client: MqttWrapper)
@@ -72,13 +80,12 @@ impl<T, H> Device<T, H>
             let mqtt_client = mqtt_client.clone();
             async move {
                 println!("Read of the power state characteristic was triggered.");
-                let power = device.characteristic::<Power>(mqtt_client.clone()).await;
-
-                // TODO: announce error
-                match power {
-                    Ok(power) => Ok(Some(power.0)),
-                    Err(_) => Ok(Some(false))
-                }
+                device.characteristic::<Power>(mqtt_client.clone()).await
+                    .map(|power| Some(power.0))
+                    .or_else(|e| {
+                        warn!("Read power error: {}", e);
+                        Ok(None)
+                    })
             }.boxed()
         }));
     }
@@ -113,8 +120,12 @@ impl<T, H> Device<T, H>
             async move {
                 println!("Read of the brightness characteristic was triggered.");
 
-                let brightness = device.characteristic::<Brightness>(mqtt_client.clone()).await;
-                Ok(Some(brightness.0 as i32))
+                device.characteristic::<Brightness>(mqtt_client.clone()).await
+                    .map(|brightness| Some(brightness.0 as i32))
+                    .or_else(|e| {
+                        warn!("Read brightness error: {}", e);
+                        Ok(None)
+                    })
             }.boxed()
         }));
     }
@@ -135,14 +146,15 @@ impl<T, H> Device<T, H>
     }
 }
 
-#[async_trait]
 pub trait Characteristic<T> {
-    async fn get_value(&self, mqtt_client: MqttWrapper) -> anyhow::Result<T>;
+    fn get_value(&self, mqtt_client: MqttWrapper) -> anyhow::Result<T>;
     fn set_value(&mut self, value: T, mqtt_client: MqttWrapper);
 }
 
+#[derive(Clone, Debug)]
 pub struct Brightness(pub u8);
 
+#[derive(Clone, Debug)]
 pub struct Power(pub bool);
 
 impl ToString for Power {

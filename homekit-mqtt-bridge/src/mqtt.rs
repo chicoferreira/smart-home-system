@@ -1,31 +1,23 @@
-use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use log::warn;
 use paho_mqtt::{AsyncClient, Message};
-use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
-struct MqttWrapperInner {
-    client: AsyncClient,
-    get_channels: HashMap<String, oneshot::Sender<Message>>,
-    channels: HashMap<String, broadcast::Sender<Message>>,
-}
+type Callback = Box<dyn Fn(&Message) -> Box<dyn Future<Output = ()> + Send + Sync> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct MqttWrapper {
     client: AsyncClient,
-    get_channels: Arc<DashMap<String, oneshot::Sender<Message>>>,
-    channels: Arc<DashMap<String, broadcast::Sender<Message>>>,
+    callbacks: Arc<DashMap<String, Callback>>,
 }
 
 impl MqttWrapper {
     pub fn new(client: AsyncClient) -> MqttWrapper {
         MqttWrapper {
             client,
-            get_channels: Arc::new(DashMap::new()),
-            channels: Arc::new(DashMap::new()),
+            callbacks: Arc::new(DashMap::new()),
         }
     }
 
@@ -37,48 +29,32 @@ impl MqttWrapper {
         self.client.publish(message);
     }
 
-    pub async fn get(&mut self, get_topic: &str, response_topic: &str) -> Result<String, ()> {
-        let (sender, receiver): (oneshot::Sender<Message>, oneshot::Receiver<Message>) = oneshot::channel();
-        self.get_channels.insert(response_topic.to_string(), sender);
+    pub fn subscribe<S>(&mut self, topic: S, callback: Callback)
+        where
+            S: Into<String> {
+        let topic = topic.into();
 
-        self.publish(get_topic, []);
-
-        let response = tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
-
-        if let Ok(Ok(message)) = response {
-            return Ok(message.payload_str().to_string());
-        }
-
-        Err(())
+        self.client.subscribe(topic.clone(), 1);
+        self.callbacks.insert(topic.clone(), callback);
     }
 
-
-    fn start_reading(&mut self) -> JoinHandle<()> {
+    fn start_reading(&self) -> JoinHandle<()> {
+        let mut self_clone = self.clone();
         tokio::spawn(async move {
-            let receiver = self.client.get_stream(10);
+            let receiver = self_clone.client.get_stream(10);
             while let Ok(message) = receiver.recv().await {
                 if let Some(message) = message {
-                    self.handle_message(message)
+                    self_clone.handle_message(message).await;
                 }
             }
         })
     }
 
-    fn handle_message(&mut self, message: Message) {
+    async fn handle_message(&mut self, message: Message) {
         let topic = message.topic();
 
-        if let Some((_, mut sender)) = self.get_channels.remove(topic) {
-            if let Err(_) = sender.send(message) {
-                warn!("sender dropped")
-            }
-            return;
-        }
-
-        if let Some(sender) = self.channels.get(topic) {
-            if let Err(_) = sender.send(message) {
-                warn!("sender dropped")
-            }
-            return;
+        if let Some(sender) = self.callbacks.get(topic) {
+            sender(&message).await;
         }
     }
 }
