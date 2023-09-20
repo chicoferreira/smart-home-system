@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use paho_mqtt::{AsyncClient, Message};
 use tokio::task::JoinHandle;
 
-type Callback = Box<dyn Fn(&Message) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type Callback = Box<dyn Fn(Message) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct MqttWrapper {
@@ -39,7 +39,7 @@ impl MqttWrapper {
         self.callbacks.insert(topic.clone(), callback);
     }
 
-    fn start_reading(&self) -> JoinHandle<()> {
+    pub fn start_reading(&self) -> JoinHandle<()> {
         let mut self_clone = self.clone();
         tokio::spawn(async move {
             let receiver = self_clone.client.get_stream(10);
@@ -55,7 +55,7 @@ impl MqttWrapper {
         let topic = message.topic();
 
         if let Some(sender) = self.callbacks.get(topic) {
-            sender(&message).await;
+            sender(message).await;
         }
     }
 }

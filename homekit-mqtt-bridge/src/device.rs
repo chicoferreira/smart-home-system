@@ -1,19 +1,23 @@
 use std::marker::PhantomData;
-use std::sync::{Arc, RwLock};
+use std::str::FromStr;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use async_trait::async_trait;
+use hap::accessory::HapAccessory;
 use hap::characteristic::AsyncCharacteristicCallbacks;
 use hap::characteristic::brightness::BrightnessCharacteristic;
 use hap::characteristic::power_state::PowerStateCharacteristic;
 use hap::futures::FutureExt;
 use log::warn;
+use paho_mqtt::Message;
 
 use crate::mqtt::MqttWrapper;
 
 pub mod yeelight_device;
 
-struct InnerDevice<T, H> {
-    name: String,
-    device: T,
+pub struct InnerDevice<T, H> {
+    pub name: String,
+    pub device: T,
     h: PhantomData<H>,
 }
 
@@ -40,16 +44,12 @@ impl<D, H> Device<D, H> {
         }
     }
 
-    pub fn name(&self) -> &str {
-        &self.inner.read().unwrap().name
+    pub fn get_inner(&self) -> RwLockReadGuard<'_, InnerDevice<D, H>> {
+        self.inner.read().unwrap()
     }
 
-    pub fn get_device(&self) -> &D {
-        &self.inner.read().unwrap().device
-    }
-
-    pub fn get_mut_device(&mut self) -> &mut D {
-        &mut self.inner.write().unwrap().device
+    pub fn get_inner_mut(&self) -> RwLockWriteGuard<'_, InnerDevice<D, H>> {
+        self.inner.write().unwrap()
     }
 
     pub async fn characteristic<A>(&self, mqtt_client: MqttWrapper) -> anyhow::Result<A>
@@ -64,6 +64,32 @@ impl<D, H> Device<D, H> {
             Self: Characteristic<A>,
     {
         self.set_value(value, mqtt_client);
+    }
+
+    pub async fn handle_message<A>(&mut self, message: Message, accessory: HapRsAccessory) -> Result<(), &'static str>
+        where
+            Self: Characteristic<A>,
+    {
+        self.handle_mqtt_message(message, accessory).await
+    }
+}
+
+impl<D: Send + Sync + 'static, H: Send + Sync + 'static> Device<D, H> {
+    fn setup_pointer<A>(self, topic: &str, mqtt_client: &mut MqttWrapper, lightbulb: HapRsAccessory)
+        where
+            Self: Characteristic<A>, {
+        mqtt_client.subscribe(
+            topic,
+            Box::new(move |message: Message| {
+                let mut self_clone = self.clone();
+                let lightbulb = lightbulb.clone();
+                Box::pin(async move {
+                    if let Err(str) = self_clone.handle_message::<A>(message, lightbulb).await {
+                        warn!("Error handling message: {}", str);
+                    }
+                })
+            }),
+        );
     }
 }
 
@@ -146,9 +172,11 @@ impl<T, H> Device<T, H>
     }
 }
 
+#[async_trait]
 pub trait Characteristic<T> {
     fn get_value(&self, mqtt_client: MqttWrapper) -> anyhow::Result<T>;
     fn set_value(&mut self, value: T, mqtt_client: MqttWrapper);
+    async fn handle_mqtt_message(&mut self, message: Message, accessory: HapRsAccessory) -> Result<(), &'static str>;
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +184,18 @@ pub struct Brightness(pub u8);
 
 #[derive(Clone, Debug)]
 pub struct Power(pub bool);
+
+impl FromStr for Power {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "on" | "true" | "1" => Ok(Power(true)),
+            "off" | "false" | "0" => Ok(Power(false)),
+            _ => Err("Could not parse power state"),
+        }
+    }
+}
 
 impl ToString for Power {
     fn to_string(&self) -> String {
@@ -171,3 +211,5 @@ impl ToString for Brightness {
         self.0.to_string()
     }
 }
+
+type HapRsAccessory = Arc<hap::futures::lock::Mutex<Box<dyn HapAccessory>>>;

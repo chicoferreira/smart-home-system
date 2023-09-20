@@ -62,12 +62,8 @@ async fn main() -> Result<()> {
     client.connect(connection_options).await
         .expect("Failed to connect to mqtt server");
 
-    let mqtt_thread = tokio::spawn(async move {
-        // for &topic in subscribe_topics.iter() {
-        //     client.subscribe(topic, 1).await
-        //         .unwrap_or_else(|_| panic!("Failed to subscribe to topic: {}", topic));
-        // }
-    });
+    let mut mqtt_wrapper = MqttWrapper::new(client);
+    let mqtt_read_handle = mqtt_wrapper.start_reading();
 
     let bridge = BridgeAccessory::new(1, AccessoryInformation {
         name: "smart-home-system bridge".into(),
@@ -81,12 +77,8 @@ async fn main() -> Result<()> {
     let server = IpServer::new(config, storage).await?;
     server.add_accessory(bridge).await?;
 
-    let mut mqtt_wrapper = MqttWrapper::new(client);
-
     let mut device = device::yeelight_device::YeelightDevice::new("yeelight".into());
-    let arc = server.add_accessory(device.setup(2, &mut mqtt_wrapper)).await?;
-
-    device.setup_pointer(&mut mqtt_wrapper, arc.clone());
+    device.setup(2, &mut mqtt_wrapper, &server).await;
 
     std::env::set_var("RUST_LOG", "hap=debug");
     env_logger::init();
@@ -96,7 +88,7 @@ async fn main() -> Result<()> {
         handle.await.expect("TODO: panic message");
     });
 
-    join_all(vec![mqtt_thread, hap_rs_handle]).await;
+    join_all(vec![mqtt_read_handle, hap_rs_handle]).await;
 
     Ok(())
 }
