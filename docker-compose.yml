@@ -1,0 +1,22 @@
+version: '3'
+
+services:
+  homekit-mqtt-bridge:
+    build: ./homekit-mqtt-bridge
+    container_name: homekit-mqtt-bridge
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - homekit-mqtt-bridge:/homekit-mqtt-bridge
+  yeelight-controller:
+    build: ./yeelight-controller
+    container_name: yeelight-controller
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+
+volumes:
+  homekit-mqtt-bridge:

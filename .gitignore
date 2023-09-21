@@ -4,3 +4,7 @@
 target/
 
 *.iml
+
+/.env
+
+/homekit-mqtt-bridge/data
