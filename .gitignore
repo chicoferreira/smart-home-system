@@ -8,3 +8,7 @@ target/
 /.env
 
 /homekit-mqtt-bridge/data
+
+/mqtt-topic-remapper/config.toml
+
+

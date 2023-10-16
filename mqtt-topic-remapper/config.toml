@@ -1,0 +1,14 @@
+[[remap]]
+from = "example-from-1"
+to = "example-to-1"
+[remap.message]
+exampleKey1 = "exampleValue1" # When receiving a message from topic "example-from-1", the value of "exampleKey1" will be replaced with "exampleValue1"
+exampleKey2 = "exampleValue2"
+
+[[remap]]
+from = "example-from-2"
+to = "example-to-2"
+
+[[remap]]
+from = "example-from-3"
+to = "example-to-3"
