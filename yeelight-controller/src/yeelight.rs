@@ -1,29 +1,29 @@
 use std::collections::HashMap;
-use std::io::Error;
+use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use log::error;
-use paho_mqtt::AsyncClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
-use tokio::sync::oneshot::{channel, Receiver, Sender};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 #[derive(Serialize)]
 pub struct Command {
-    id: Id,
+    id: u64,
     #[serde(flatten)]
     method: Method,
 }
 
 impl Command {
-    pub const fn new(id: Id, method: Method) -> Self {
+    pub const fn new(id: u64, method: Method) -> Self {
         Self { id, method }
     }
 }
@@ -72,12 +72,12 @@ impl FromStr for Power {
     }
 }
 
-impl ToString for Power {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for Power {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
             Self::On => "on",
             Self::Off => "off",
-        }.to_string()
+        })
     }
 }
 
@@ -90,7 +90,7 @@ pub enum YeelightMessage {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Response {
-    pub id: Id,
+    pub id: u64,
     #[serde(flatten)]
     pub result: ResponseResult,
 }
@@ -126,46 +126,42 @@ impl FromStr for Notification {
     }
 }
 
-type Id = u64;
-
 pub struct Device {
-    current_id: Mutex<Id>,
+    current_id: AtomicU64,
     write_half: OwnedWriteHalf,
-    responses: Arc<DashMap<Id, Sender<Response>>>,
+    responses: Arc<DashMap<u64, oneshot::Sender<Response>>>,
     read_handle: JoinHandle<()>,
 }
-
-pub type NotificationHandler = fn(Notification, &AsyncClient);
 
 impl Device {
     pub const DEFAULT_PORT: u16 = 55443;
 
-    pub async fn new(hostname: String, port: u16, notification_handler: fn(Notification, &AsyncClient), client: &AsyncClient) -> std::io::Result<Self> {
-        let (read_half, write_half) = TcpStream::connect((hostname, port)).await?.into_split();
+    pub async fn new(address: String, mut notification_handler: mpsc::Sender<Notification>) -> anyhow::Result<Self> {
+        let (read_half, write_half) = TcpStream::connect(address).await?.into_split();
 
-        let wait_map: Arc<DashMap<Id, Sender<Response>>> = Arc::new(DashMap::new());
-        let read_handle = Self::start_reading_incoming_messages(read_half, wait_map.clone(), notification_handler, client.clone());
+        let responses: Arc<DashMap<u64, oneshot::Sender<Response>>> = Arc::new(DashMap::new());
 
-        Ok(Self { write_half, current_id: Mutex::new(0), responses: wait_map, read_handle })
-    }
+        let arc = responses.clone();
 
-    fn start_reading_incoming_messages(read_half: OwnedReadHalf, wait_map: Arc<DashMap<Id, Sender<Response>>>, notification_handler: NotificationHandler, client: AsyncClient) -> JoinHandle<()> {
-        tokio::spawn(async move {
+        let read_handle = tokio::spawn(async move {
             let mut read_half = BufReader::new(read_half);
-            loop {
-                let mut buffer = String::new();
-                read_half.read_line(&mut buffer).await.unwrap();
-
-                if buffer.is_empty() {
-                    continue;
+            let mut buffer = String::new();
+            while read_half.read_line(&mut buffer).await.unwrap() > 0 {
+                if !buffer.is_empty() {
+                    Self::process_incoming_message(&arc, &mut buffer, &mut notification_handler).await;
                 }
-
-                Self::process_incoming_message(&wait_map, &mut buffer, notification_handler, &client);
+                buffer.clear();
             }
-        })
+        });
+
+        Ok(Self { write_half, current_id: AtomicU64::new(0), responses: responses.clone(), read_handle })
     }
 
-    fn process_incoming_message(wait_map: &Arc<DashMap<Id, Sender<Response>>>, content: &mut str, notification_handler: NotificationHandler, client: &AsyncClient) {
+    async fn process_incoming_message(
+        wait_map: &Arc<DashMap<u64, oneshot::Sender<Response>>>,
+        content: &mut str, notification_sender:
+        &mut mpsc::Sender<Notification>,
+    ) {
         let message: YeelightMessage = match serde_json::from_str(content) {
             Ok(message) => message,
             Err(error) => {
@@ -176,17 +172,17 @@ impl Device {
 
         match message {
             YeelightMessage::Response(response) => {
-                if let Some(sender) = wait_map.remove(&response.id) {
-                    sender.1.send(response).unwrap();
+                if let Some((_, sender)) = wait_map.remove(&response.id) {
+                    sender.send(response).unwrap();
                 }
             }
             YeelightMessage::Notification(notification) => {
-                notification_handler(notification, client);
+                notification_sender.send(notification).await.unwrap();
             }
         }
     }
 
-    pub async fn send_method(&mut self, method: Method) -> std::io::Result<Response> {
+    pub async fn send_method(&mut self, method: Method) -> anyhow::Result<Response> {
         let command = self.new_command(method).await;
 
         self.write_half.write_all(&serde_json::to_vec(&command)?).await?;
@@ -197,23 +193,23 @@ impl Device {
     }
 
     async fn new_command(&mut self, method: Method) -> Command {
-        let mut current_id = self.current_id.lock().await;
+        let current_id = self.current_id.get_mut();
         *current_id += 1;
 
         Command::new(*current_id, method)
     }
 
-    async fn read_response(&mut self, id: Id) -> std::io::Result<Response> {
-        let (sender, receiver): (Sender<Response>, Receiver<Response>) = channel();
+    async fn read_response(&mut self, id: u64) -> anyhow::Result<Response> {
+        let (sender, receiver) = oneshot::channel();
         self.responses.insert(id, sender);
 
-        let response = tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
+        let response = tokio::time::timeout(Duration::from_secs(5), receiver).await;
 
         if let Ok(Ok(response)) = response {
             return Ok(response);
         }
 
-        Err(Error::new(std::io::ErrorKind::TimedOut, "Read response timed out"))
+        anyhow::bail!("{} id timedout", id)
     }
 }
 
@@ -225,13 +221,14 @@ impl Drop for Device {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Display;
     use std::str::FromStr;
 
     use crate::yeelight::{Command, Method, Notification, Power, Response, ResponseResult};
 
-    impl ToString for Command {
-        fn to_string(&self) -> String {
-            serde_json::to_string(self).unwrap()
+    impl Display for Command {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", serde_json::to_string(self).unwrap())
         }
     }
 
