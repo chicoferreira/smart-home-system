@@ -134,8 +134,6 @@ pub struct Device {
 }
 
 impl Device {
-    pub const DEFAULT_PORT: u16 = 55443;
-
     pub async fn new(address: String, mut notification_handler: mpsc::Sender<Notification>) -> anyhow::Result<Self> {
         let (read_half, write_half) = TcpStream::connect(address).await?.into_split();
 
