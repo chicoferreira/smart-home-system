@@ -28,7 +28,6 @@ pub async fn connect_mqtt(
     }
 
     let connection_options = connection_options
-        .keep_alive_interval(Duration::from_secs(20))
         .clean_session(true)
         .automatic_reconnect(Duration::from_secs(1), Duration::from_secs(30))
         .finalize();
