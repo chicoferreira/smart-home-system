@@ -5,12 +5,13 @@ COPY ./Cargo.toml ./homekit-mqtt-bridge/Cargo.toml
 
 WORKDIR ./homekit-mqtt-bridge
 
-RUN apt-get update && apt-get install -y libssl-dev && apt-get install -y cmake
+RUN apt-get update && apt-get install -y cmake
 
 RUN cargo build --release
 
-# Runtime stage
-FROM debian:buster-slim
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y openssl
 
 COPY --from=builder /homekit-mqtt-bridge/target/release/homekit-mqtt-bridge /usr/local/bin/homekit-mqtt-bridge
 
