@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   homekit-mqtt-bridge:
     build: ./homekit-mqtt-bridge
