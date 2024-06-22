@@ -15,13 +15,6 @@ services:
     network_mode: host
     env_file:
       - .env
-  mqtt-topic-remapper:
-    build: ./mqtt-topic-remapper
-    container_name: mqtt-topic-remapper
-    restart: unless-stopped
-    network_mode: host
-    env_file:
-      - .env
 
 volumes:
   homekit-mqtt-bridge:
